@@ -4,7 +4,7 @@ import { submitToSigner } from "@red-cup-engineering/hive-fleet-operations-servi
 import { put } from "@red-cup-engineering/semiotic-eavt-engineering-services-section/store";
 import { addDecimalStrings, compareDecimalStrings } from "@red-cup-engineering/exact-number-codec/decimal-string";
 
-const REQUIRED_ADMITTED_OPERATIONS = Object.freeze(["limit_order_create", "limit_order_cancel"]);
+const REQUIRED_VALIDATED_OPERATIONS = Object.freeze(["limit_order_create", "limit_order_cancel"]);
 const DEFAULT_EXPIRY_SECONDS = 86400;
 
 /** True when decimal string `a` exceeds decimal string `b`. */
@@ -18,7 +18,7 @@ function mandateArmed(mandate, account) {
     mandate != null &&
     mandate.account === account &&
     Array.isArray(mandate.admittedOperations) &&
-    REQUIRED_ADMITTED_OPERATIONS.every((op) => mandate.admittedOperations.includes(op)) &&
+    REQUIRED_VALIDATED_OPERATIONS.every((op) => mandate.admittedOperations.includes(op)) &&
     mandate.maxExposure != null &&
     typeof mandate.maxExposure.hive === "string" &&
     typeof mandate.maxExposure.hbd === "string"
@@ -56,13 +56,13 @@ function orderAssets(entry) {
  * @throws {TypeError} When `request.account` is missing.
  */
 export async function applyPegLadder(request) {
-  const { diff, account, mandatePath, journalRoot } = request;
+  const { diff, account, mandatePath, journalRoot: logRoot } = request;
   if (!account) throw new TypeError("apply-peg-ladder: request.account is required");
   const appliedAt = request.now ? new Date(request.now).toISOString() : new Date().toISOString();
   const expirySeconds = request.expirySeconds ?? DEFAULT_EXPIRY_SECONDS;
 
   const refuseDryRun = (detail, mandate = null) => {
-    put(journalRoot, "hive-peg-ladder-apply", { category: "peg-ladder-dry-run", account, diff, detail, at: appliedAt });
+    put(logRoot, "hive-peg-ladder-apply", { category: "peg-ladder-dry-run", account, diff, detail, at: appliedAt });
     return { type: "AppliedPegLadderRecord", version: 1, account, appliedAt, created: [], cancelled: [], refusal: { reason: "mandate-not-armed", detail, mandatePath } };
   };
 
@@ -85,15 +85,15 @@ export async function applyPegLadder(request) {
   const cancelled = [];
   const created = [];
   // The signer refusing a rung stops the ladder there; what already went out stays recorded.
-  const refusedBySigner = (error) => {
+  const rejectedBySigner = (error) => {
     if (!error?.refusal) throw error;
     return { type: "AppliedPegLadderRecord", version: 1, account, appliedAt, created, cancelled, refusal: { reason: error.refusal.datum, detail: error.refusal.reason } };
   };
   for (const entry of diff.cancel) {
     let result;
-    try { result = await rung(entry.orderid, limitOrderCancel({ owner: account, orderid: entry.orderid })); } catch (error) { return refusedBySigner(error); }
+    try { result = await rung(entry.orderid, limitOrderCancel({ owner: account, orderid: entry.orderid })); } catch (error) { return rejectedBySigner(error); }
     cancelled.push({ orderid: entry.orderid, transactionId: result.id });
-    put(journalRoot, "hive-peg-ladder-apply", { category: "peg-ladder-cancel", account, orderid: entry.orderid, side: entry.side, priceHbdPerHive: entry.priceHbdPerHive, transactionId: result.id, at: new Date().toISOString() });
+    put(logRoot, "hive-peg-ladder-apply", { category: "peg-ladder-cancel", account, orderid: entry.orderid, side: entry.side, priceHbdPerHive: entry.priceHbdPerHive, transactionId: result.id, at: new Date().toISOString() });
   }
 
   // Chain expiration: ISO seconds, UTC, no zone suffix.
@@ -101,9 +101,9 @@ export async function applyPegLadder(request) {
   for (const entry of diff.create) {
     const { amount_to_sell, min_to_receive } = orderAssets(entry);
     let result;
-    try { result = await rung(entry.orderid, limitOrderCreate({ owner: account, orderid: entry.orderid, amount_to_sell, min_to_receive, fill_or_kill: false, expiration })); } catch (error) { return refusedBySigner(error); }
+    try { result = await rung(entry.orderid, limitOrderCreate({ owner: account, orderid: entry.orderid, amount_to_sell, min_to_receive, fill_or_kill: false, expiration })); } catch (error) { return rejectedBySigner(error); }
     created.push({ orderid: entry.orderid, side: entry.side, priceHbdPerHive: entry.priceHbdPerHive, transactionId: result.id });
-    put(journalRoot, "hive-peg-ladder-apply", { category: "peg-ladder-create", account, orderid: entry.orderid, side: entry.side, priceHbdPerHive: entry.priceHbdPerHive, hive: entry.hive, hbd: entry.hbd, expiration, transactionId: result.id, at: new Date().toISOString() });
+    put(logRoot, "hive-peg-ladder-apply", { category: "peg-ladder-create", account, orderid: entry.orderid, side: entry.side, priceHbdPerHive: entry.priceHbdPerHive, hive: entry.hive, hbd: entry.hbd, expiration, transactionId: result.id, at: new Date().toISOString() });
   }
 
   return { type: "AppliedPegLadderRecord", version: 1, account, appliedAt, created, cancelled, refusal: null };
