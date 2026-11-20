@@ -42,7 +42,7 @@ function projectOpenOrder(order) {
  * @returns {Promise<object>} A PegLadderCycleRunRecord: `{type,version,account,ranAt,killSwitch,observation,balance,derivation,applied,reconciliation}`.
  */
 export async function runPegLadderCycle(request) {
-  const { account, policy, sleeve, mandatePath, journalRoot: logRoot, statePath } = request;
+  const { account, policy, sleeve, mandatePath, journalRoot, statePath } = request;
   const now = request.now ?? new Date().toISOString();
   const nodes = request.nodes;
 
@@ -62,8 +62,8 @@ export async function runPegLadderCycle(request) {
       restingOrders = [];
     }
     const diff = { create: [], cancel: restingOrders.map(restingOrderRef), keep: [] };
-    const applied = await applyPegLadder({ diff, account, mandatePath, journalRoot: logRoot, now, sign: request.sign });
-    put(logRoot, "hive-peg-ladder-cycle", { category: "peg-ladder-kill-switch", account, reason, detail, cancelledCount: applied.cancelled.length, refusal: applied.refusal, at: now });
+    const applied = await applyPegLadder({ diff, account, mandatePath, journalRoot, now, sign: request.sign });
+    put(journalRoot, "hive-peg-ladder-cycle", { category: "peg-ladder-kill-switch", account, reason, detail, cancelledCount: applied.cancelled.length, refusal: applied.refusal, at: now });
     return { type: "PegLadderCycleRunRecord", version: 1, account, ranAt: now, killSwitch: { reason, detail }, observation, balance, derivation: null, applied, reconciliation: null };
   };
 
@@ -89,7 +89,7 @@ export async function runPegLadderCycle(request) {
   const restingOrders = openOrders.map(projectOpenOrder);
 
   const derivation = derivePegLadder({ observation, balance, sleeve, policy, restingOrders, now });
-  const applied = await applyPegLadder({ diff: derivation.diff, account, mandatePath, journalRoot: logRoot, now, sign: request.sign });
+  const applied = await applyPegLadder({ diff: derivation.diff, account, mandatePath, journalRoot, now, sign: request.sign });
 
   let state = { lastProcessedBlock: 0 };
   try {
@@ -107,7 +107,7 @@ export async function runPegLadderCycle(request) {
   });
   await writeFileText(statePath, JSON.stringify({ lastProcessedBlock: reconciliation.lastProcessedBlock }));
 
-  put(logRoot, "hive-peg-ladder-cycle", { category: "peg-ladder-cycle-result", account, refusal: derivation.refusal, createdCount: applied.created.length, cancelledCount: applied.cancelled.length, fillsCount: reconciliation.fills.length, applyRefusal: applied.refusal, at: now });
+  put(journalRoot, "hive-peg-ladder-cycle", { category: "peg-ladder-cycle-result", account, refusal: derivation.refusal, createdCount: applied.created.length, cancelledCount: applied.cancelled.length, fillsCount: reconciliation.fills.length, applyRefusal: applied.refusal, at: now });
 
   return { type: "PegLadderCycleRunRecord", version: 1, account, ranAt: now, killSwitch: null, observation, balance, derivation, applied, reconciliation };
 }
